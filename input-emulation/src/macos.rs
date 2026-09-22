@@ -192,6 +192,12 @@ fn is_function_key(key: u16) -> bool {
     )
 }
 
+/// Mac virtual key codes for the navigation cluster: Home, End, PageUp,
+/// PageDown and ForwardDelete (`kVK_Home` etc. in Carbon's `Events.h`).
+fn is_nav_key(key: u16) -> bool {
+    matches!(key, 0x73 | 0x77 | 0x74 | 0x79 | 0x75)
+}
+
 /// Flags macOS attaches to hardware key events for `key` on top of the
 /// user-pressed modifiers. CGEventTap-based hotkey matchers (e.g. skhd,
 /// tiling window managers) check these flags to recognize navigation and
@@ -200,8 +206,10 @@ fn implicit_key_flags(key: u16) -> CGEventFlags {
     if is_arrow_key(key) {
         // Arrows carry NumericPad + SecondaryFn.
         CGEventFlags::CGEventFlagNumericPad | CGEventFlags::CGEventFlagSecondaryFn
-    } else if is_function_key(key) {
-        // F-keys carry SecondaryFn only (skhd's `f13` compiles to `fn - f13`).
+    } else if is_function_key(key) || is_nav_key(key) {
+        // F-keys and the navigation cluster carry SecondaryFn only
+        // (captured from a real HID keyboard; skhd's `f13` / `home`
+        // keywords compile to `fn - f13` / `fn - home`).
         CGEventFlags::CGEventFlagSecondaryFn
     } else {
         CGEventFlags::empty()
@@ -629,6 +637,8 @@ mod tests {
         0x67, 0x6F, 0x69, 0x6B, 0x71, 0x6A, 0x40, 0x4F, 0x50, 0x5A, // F11–F20
     ];
     const ARROW_KEYS: [u16; 4] = [MAC_KEY_LEFT, MAC_KEY_RIGHT, MAC_KEY_DOWN, MAC_KEY_UP];
+    /// Home, End, PageUp, PageDown, ForwardDelete.
+    const NAV_KEYS: [u16; 5] = [0x73, 0x77, 0x74, 0x79, 0x75];
     /// kVK_ANSI_A, kVK_Return, kVK_Space, kVK_Delete, kVK_Shift, kVK_Command.
     const PLAIN_KEYS: [u16; 6] = [0x00, 0x24, 0x31, 0x33, 0x38, 0x37];
 
@@ -637,8 +647,26 @@ mod tests {
         for key in FUNCTION_KEYS {
             assert!(is_function_key(key), "0x{key:02X} should be a function key");
         }
-        for key in ARROW_KEYS.iter().chain(PLAIN_KEYS.iter()) {
+        for key in ARROW_KEYS
+            .iter()
+            .chain(NAV_KEYS.iter())
+            .chain(PLAIN_KEYS.iter())
+        {
             assert!(!is_function_key(*key), "0x{key:02X} is not a function key");
+        }
+    }
+
+    #[test]
+    fn nav_keys_are_recognized() {
+        for key in NAV_KEYS {
+            assert!(is_nav_key(key), "0x{key:02X} should be a nav key");
+        }
+        for key in ARROW_KEYS
+            .iter()
+            .chain(FUNCTION_KEYS.iter())
+            .chain(PLAIN_KEYS.iter())
+        {
+            assert!(!is_nav_key(*key), "0x{key:02X} is not a nav key");
         }
     }
 
@@ -647,7 +675,11 @@ mod tests {
         for key in ARROW_KEYS {
             assert!(is_arrow_key(key), "0x{key:02X} should be an arrow key");
         }
-        for key in FUNCTION_KEYS.iter().chain(PLAIN_KEYS.iter()) {
+        for key in FUNCTION_KEYS
+            .iter()
+            .chain(NAV_KEYS.iter())
+            .chain(PLAIN_KEYS.iter())
+        {
             assert!(!is_arrow_key(*key), "0x{key:02X} is not an arrow key");
         }
     }
@@ -658,6 +690,9 @@ mod tests {
         let fn_numpad = fn_only | CGEventFlags::CGEventFlagNumericPad;
         for key in FUNCTION_KEYS {
             assert_eq!(implicit_key_flags(key), fn_only, "F-key 0x{key:02X}");
+        }
+        for key in NAV_KEYS {
+            assert_eq!(implicit_key_flags(key), fn_only, "nav key 0x{key:02X}");
         }
         for key in ARROW_KEYS {
             assert_eq!(implicit_key_flags(key), fn_numpad, "arrow 0x{key:02X}");
