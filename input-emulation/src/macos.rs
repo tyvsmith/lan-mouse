@@ -181,6 +181,33 @@ fn is_arrow_key(key: u16) -> bool {
     )
 }
 
+/// Mac virtual key codes for F1–F20 (`kVK_F1` … `kVK_F20` in Carbon's `Events.h`).
+fn is_function_key(key: u16) -> bool {
+    matches!(
+        key,
+        // F1–F10
+        0x7A | 0x78 | 0x63 | 0x76 | 0x60 | 0x61 | 0x62 | 0x64 | 0x65 | 0x6D
+        // F11–F20
+        | 0x67 | 0x6F | 0x69 | 0x6B | 0x71 | 0x6A | 0x40 | 0x4F | 0x50 | 0x5A
+    )
+}
+
+/// Flags macOS attaches to hardware key events for `key` on top of the
+/// user-pressed modifiers. CGEventTap-based hotkey matchers (e.g. skhd,
+/// tiling window managers) check these flags to recognize navigation and
+/// function keys; synthesized events without them fail to match.
+fn implicit_key_flags(key: u16) -> CGEventFlags {
+    if is_arrow_key(key) {
+        // Arrows carry NumericPad + SecondaryFn.
+        CGEventFlags::CGEventFlagNumericPad | CGEventFlags::CGEventFlagSecondaryFn
+    } else if is_function_key(key) {
+        // F-keys carry SecondaryFn only (skhd's `f13` compiles to `fn - f13`).
+        CGEventFlags::CGEventFlagSecondaryFn
+    } else {
+        CGEventFlags::empty()
+    }
+}
+
 fn key_event(event_source: CGEventSource, key: u16, state: u8, modifiers: XMods) {
     let event = match CGEvent::new_keyboard_event(event_source, key, state != 0) {
         Ok(e) => e,
@@ -189,15 +216,7 @@ fn key_event(event_source: CGEventSource, key: u16, state: u8, modifiers: XMods)
             return;
         }
     };
-    let mut flags = to_cgevent_flags(modifiers);
-    // Hardware-generated arrow keys on macOS carry NumericPad + SecondaryFn.
-    // CGEventTap-based hotkey matchers (e.g. tiling window managers) check
-    // these flags to recognize navigation keys; without them synthesized
-    // arrow chords fall through to the focused app.
-    if is_arrow_key(key) {
-        flags |= CGEventFlags::CGEventFlagNumericPad | CGEventFlags::CGEventFlagSecondaryFn;
-    }
-    event.set_flags(flags);
+    event.set_flags(to_cgevent_flags(modifiers) | implicit_key_flags(key));
     event.post(CGEventTapLocation::HID);
     log::trace!("key event: {key} {state}");
 }
@@ -598,5 +617,57 @@ bitflags! {
         const Mod3Mask = (1<<5);
         const Mod4Mask = (1<<6);
         const Mod5Mask = (1<<7);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FUNCTION_KEYS: [u16; 20] = [
+        0x7A, 0x78, 0x63, 0x76, 0x60, 0x61, 0x62, 0x64, 0x65, 0x6D, // F1–F10
+        0x67, 0x6F, 0x69, 0x6B, 0x71, 0x6A, 0x40, 0x4F, 0x50, 0x5A, // F11–F20
+    ];
+    const ARROW_KEYS: [u16; 4] = [MAC_KEY_LEFT, MAC_KEY_RIGHT, MAC_KEY_DOWN, MAC_KEY_UP];
+    /// kVK_ANSI_A, kVK_Return, kVK_Space, kVK_Delete, kVK_Shift, kVK_Command.
+    const PLAIN_KEYS: [u16; 6] = [0x00, 0x24, 0x31, 0x33, 0x38, 0x37];
+
+    #[test]
+    fn function_keys_are_recognized() {
+        for key in FUNCTION_KEYS {
+            assert!(is_function_key(key), "0x{key:02X} should be a function key");
+        }
+        for key in ARROW_KEYS.iter().chain(PLAIN_KEYS.iter()) {
+            assert!(!is_function_key(*key), "0x{key:02X} is not a function key");
+        }
+    }
+
+    #[test]
+    fn arrow_keys_are_recognized() {
+        for key in ARROW_KEYS {
+            assert!(is_arrow_key(key), "0x{key:02X} should be an arrow key");
+        }
+        for key in FUNCTION_KEYS.iter().chain(PLAIN_KEYS.iter()) {
+            assert!(!is_arrow_key(*key), "0x{key:02X} is not an arrow key");
+        }
+    }
+
+    #[test]
+    fn implicit_flags_match_hardware() {
+        let fn_only = CGEventFlags::CGEventFlagSecondaryFn;
+        let fn_numpad = fn_only | CGEventFlags::CGEventFlagNumericPad;
+        for key in FUNCTION_KEYS {
+            assert_eq!(implicit_key_flags(key), fn_only, "F-key 0x{key:02X}");
+        }
+        for key in ARROW_KEYS {
+            assert_eq!(implicit_key_flags(key), fn_numpad, "arrow 0x{key:02X}");
+        }
+        for key in PLAIN_KEYS {
+            assert_eq!(
+                implicit_key_flags(key),
+                CGEventFlags::empty(),
+                "plain 0x{key:02X}"
+            );
+        }
     }
 }
